@@ -1,5 +1,6 @@
 package dev.app.tof
 
+import android.util.Log
 import java.util.concurrent.ArrayBlockingQueue
 
 data class CalibrationResult(
@@ -20,29 +21,24 @@ class ToFProcessor(
         running = true
         worker = Thread {
             while (running && !Thread.currentThread().isInterrupted) {
-                // 這裡如果 stop() 有 interrupt，take() 會丟 InterruptedException
                 val frame = try {
                     queue.take()
                 } catch (ie: InterruptedException) {
                     break
                 }
                 val result = processFrame(frame)
-                if (result.valid) {
-                    listener(result)
-                }
+                listener(result)
             }
         }.apply { start() }
     }
 
     fun stop() {
         running = false
-        // 把 queue 卡住的 take() 喚醒
         worker?.interrupt()
         worker = null
     }
 
     fun submit(frame: ToFFrame) {
-        // 滿了就丟掉一個舊的，避免一直塞
         if (!queue.offer(frame)) {
             queue.poll()
             queue.offer(frame)
@@ -53,7 +49,6 @@ class ToFProcessor(
         val mask = buildValidMask(frame)
         val points = depthAmpTo3D(frame, mask)
 
-        // 取前 5 個當 sample
         val sample = if (points.size > 5) points.subList(0, 5) else points
 
         return CalibrationResult(
@@ -67,8 +62,9 @@ class ToFProcessor(
         val total = frame.width * frame.height
         val mask = BooleanArray(total)
         for (i in 0 until total) {
-            val d = frame.depth[i].toInt()
-            val a = frame.amp[i].toInt()
+            val d = frame.depth[i]
+            val a = frame.amp[i]
+            // 你剛好就有 65500，要把它當成「無效」
             mask[i] = d != 0 && a != 0 && a < 65000
         }
         return mask
@@ -87,8 +83,9 @@ class ToFProcessor(
             for (x in 0 until w) {
                 val idx = y * w + x
                 if (!mask[idx]) continue
-                val dmm = frame.depth[idx].toInt()
-                val z = dmm / 1000f
+
+                val dmm = frame.depth[idx]      // int mm
+                val z = dmm / 1000f              // m
                 val X = (x - cx) * z / fx
                 val Y = (y - cy) * z / fy
                 out.add(floatArrayOf(X, Y, z))
