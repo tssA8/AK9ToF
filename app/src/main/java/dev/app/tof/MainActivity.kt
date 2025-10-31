@@ -81,7 +81,10 @@ private fun rememberToFProcessor(): ToFProcessor {
             if (result.valid) {
                 Log.d("ToF", "3D points = ${result.pointsCount}")
                 result.samplePoints.forEachIndexed { i, p ->
-                    Log.d("ToF", "pt[$i] = x=${p[0]}, y=${p[1]}, z=${p[2]}")
+                    Log.d(
+                        "ToF",
+                        "pt[$i] pix=(${p.u},${p.v}) depth=${p.depthMm}mm amp=${p.amp} → X=${p.x}, Y=${p.y}, Z=${p.z}"
+                    )
                 }
             } else {
                 Log.d("ToF", "invalid frame")
@@ -89,6 +92,7 @@ private fun rememberToFProcessor(): ToFProcessor {
         }
     }
 }
+
 
 @Composable
 fun Greeting(name: String, modifier: Modifier = Modifier) {
