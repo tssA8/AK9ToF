@@ -61,23 +61,36 @@ fun ToFScreen() {
     }
 } // ← 只需要這一個括號結束 ToFScreen。不要再多一個。
 
+
+fun pickRaylutCacheDir(context: android.content.Context): java.io.File {
+    // 所有外部檔案目錄（[0] 通常是內建外部儲存；[1] 若存在多半是可移除 SD 卡）
+    val dirs = context.getExternalFilesDirs(null)
+    val sdCandidate = dirs?.firstOrNull { it != null && android.os.Environment.isExternalStorageRemovable(it) }
+    val base = sdCandidate ?: dirs?.firstOrNull() ?: context.filesDir  // 三段式 fallback
+    return java.io.File(base, "raylut").apply { mkdirs() }
+}
+
+
 @Composable
 private fun rememberToFProcessor(): ToFProcessor {
     val context = LocalContext.current
     return remember {
-        val cacheDir = java.io.File(context.filesDir, "raylut")
-        ToFProcessor(listener = { result ->
-            if (result.valid) {
-                Log.d("ToF", "3D points = ${result.pointsCount}")
-                result.samplePoints.forEachIndexed { i, p ->
-                    Log.d("ToF",
-                        "pt[$i] pix=(${p.u},${p.v}) depth=${p.depthMm}mm amp=${p.amp} → X=${p.x}, Y=${p.y}, Z=${p.z}"
-                    )
+        val cacheDir = pickRaylutCacheDir(context)   // ← 換成 SD 卡 app 目錄（若有）
+        ToFProcessor(
+            listener = { result ->
+                if (result.valid) {
+                    Log.d("ToF", "3D points = ${result.pointsCount}")
+                    result.samplePoints.forEachIndexed { i, p ->
+                        Log.d("ToF",
+                            "pt[$i] pix=(${p.u},${p.v}) depth=${p.depthMm}mm amp=${p.amp} → X=${p.x}, Y=${p.y}, Z=${p.z}"
+                        )
+                    }
+                } else {
+                    Log.d("ToF", "invalid frame")
                 }
-            } else {
-                Log.d("ToF", "invalid frame")
-            }
-        }, cacheDir = cacheDir)
+            },
+            cacheDir = cacheDir
+        )
     }
 }
 

@@ -161,6 +161,11 @@ class ToFProcessor(
             return CalibrationResult(valid = false, pointsCount = 0)
         }
 
+        latestSdkCloud?.let { (sx, sy, sz) ->
+            val stats = validateAgainstSdk(rays!!, frame, sx, sy, sz)
+            Log.d(TAG, "LUT-vs-SDK count=${stats.count}, rmse=${"%.1f".format(stats.rmseOverallMm)}mm, p95=${"%.1f".format(stats.p95OverallMm)}mm")
+        }
+
         // 6) 平面擬合（RANSAC → LLS）
         val plane = estimatePlaneRansac(points) ?: run {
             Log.w(TAG, "plane fit failed")
@@ -243,6 +248,12 @@ class ToFProcessor(
         printedIntrinsics = false
     }
 
+
+
+    @Volatile private var latestSdkCloud: Triple<FloatArray, FloatArray, FloatArray>? = null
+    fun updateSdkCloud(x: FloatArray, y: FloatArray, z: FloatArray) {
+        latestSdkCloud = Triple(x, y, z)
+    }
 
     private fun sanityPrintIntrinsicsOnce() {
         if (printedIntrinsics) return
@@ -367,6 +378,121 @@ class ToFProcessor(
         }
         return out
     }
+
+    /** sdkX/Y/Z 長度應為 w*h；無值的點用 NaN 或 0 表示 */
+    private fun validateAgainstSdk(
+        rays: RaysLUT,
+        frame: ToFFrame,
+        sdkX: FloatArray, sdkY: FloatArray, sdkZ: FloatArray
+    ): LutSdkDiffStats {
+        val w = rays.K.width; val h = rays.K.height
+        val n = w*h
+        var cnt = 0
+        var sumSq = 0.0
+        var sumSqX = 0.0; var sumSqY = 0.0; var sumSqZ = 0.0
+        val errs = ArrayList<Double>(n)
+
+        for (i in 0 until n) {
+            val dmm = frame.depth[i]
+            val amp = frame.amp[i]
+            if (dmm <= 0 || amp <= 0) continue
+            val sx = sdkX[i]; val sy = sdkY[i]; val sz = sdkZ[i]
+            if (!sx.isFinite() || !sy.isFinite() || !sz.isFinite()) continue
+
+            val z = dmm / 1000f
+            val x = rays.dirX[i] * z
+            val y = rays.dirY[i] * z
+
+            val dx = (x - sx).toDouble()
+            val dy = (y - sy).toDouble()
+            val dz = (z - sz).toDouble()
+            val de = kotlin.math.sqrt(dx*dx + dy*dy + dz*dz)
+            errs.add(de)
+            sumSq += de*de
+            sumSqX += dx*dx; sumSqY += dy*dy; sumSqZ += dz*dz
+            cnt++
+        }
+
+        errs.sort()
+        val p95 = if (errs.isEmpty()) 0.0 else errs[(errs.size*0.95).toInt().coerceAtMost(errs.size-1)]
+        return LutSdkDiffStats(
+            count = cnt,
+            rmseOverallMm = if (cnt==0) 0.0 else kotlin.math.sqrt(sumSq/cnt)*1000.0,
+            rmseXm = if (cnt==0) 0.0 else kotlin.math.sqrt(sumSqX/cnt),
+            rmseYm = if (cnt==0) 0.0 else kotlin.math.sqrt(sumSqY/cnt),
+            rmseZm = if (cnt==0) 0.0 else kotlin.math.sqrt(sumSqZ/cnt),
+            p95OverallMm = p95*1000.0
+        )
+    }
+
+
+    private fun validatePlane(points: List<Debug3DPoint>): LutPlaneMetrics? {
+        if (points.size < 50) return null
+
+        // --- 用你現有的 RANSAC + LLS ---
+        val plane = estimatePlaneRansac(points) ?: return null
+        var n = plane.normal; var d = plane.d
+        if (n[2] < 0f) { n = floatArrayOf(-n[0], -n[1], -n[2]); d = -d }
+
+        // 角度
+        val rawTilt = Math.toDegrees(kotlin.math.acos(n[2].coerceIn(-1f, 1f).toDouble()))
+        val tiltDeg = if (rawTilt > 90) 180 - rawTilt else rawTilt
+        val yawDeg = Math.toDegrees(kotlin.math.atan2(n[0].toDouble(), n[2].toDouble()))
+        val pitchDeg = Math.toDegrees(kotlin.math.atan2(-n[1].toDouble(), kotlin.math.sqrt((n[0]*n[0] + n[2]*n[2]).toDouble())))
+
+        // RMSE / inliers（同你的動態閾值）
+        var sumSqMm = 0.0
+        var inliers = 0
+        fun thM(z: Float) = maxOf(0.008f, 0.005f * z) // 8mm or 0.5%
+        for (p in points) {
+            val distM = kotlin.math.abs(n[0]*p.x + n[1]*p.y + n[2]*p.z + d)
+            sumSqMm += (distM * 1000.0) * (distM * 1000.0)
+            if (distM <= thM(p.z)) inliers++
+        }
+        val rmseMm = kotlin.math.sqrt(sumSqMm / points.size)
+        val inlierRatio = inliers.toDouble() / points.size
+
+        return LutPlaneMetrics(
+            rmseMm = rmseMm,
+            inlierRatio = inlierRatio,
+            n = n,
+            d = d,
+            tiltDeg = tiltDeg,
+            yawDeg = yawDeg,
+            pitchDeg = pitchDeg,
+            pointsUsed = points.size
+        )
+    }
+
+
+
+    data class LutPlaneMetrics(
+        val rmseMm: Double,
+        val inlierRatio: Double,
+        val n: FloatArray, // plane normal (nx, ny, nz) 朝 +Z
+        val d: Float,
+        val tiltDeg: Double,
+        val yawDeg: Double,
+        val pitchDeg: Double,
+        val pointsUsed: Int
+    )
+
+    data class LutSdkDiffStats(
+        val count: Int,
+        val rmseOverallMm: Double,
+        val rmseXm: Double,
+        val rmseYm: Double,
+        val rmseZm: Double,
+        val p95OverallMm: Double
+    )
+
+    data class LutSanity(
+        val w: Int, val h: Int,
+        val dirXMin: Float, val dirXMax: Float, val dirXMean: Float,
+        val dirYMin: Float, val dirYMax: Float, val dirYMean: Float,
+        val fovXdegApprox: Double, // 2*atan(max|dirX|)
+        val fovYdegApprox: Double  // 2*atan(max|dirY|)
+    )
 
     companion object {
         private const val TAG = "ToF"
