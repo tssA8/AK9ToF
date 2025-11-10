@@ -37,33 +37,20 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun ToFScreen() {
     val context = LocalContext.current
-
-    // 1) 資料來源：從 res/raw 讀剛剛放的 depth1.txt 跟 amp_1.txt
     val source: ToFSource = remember { RawToFSource(context) }
-
-    // 2) 背景算 frame 的 processor
     val processor = rememberToFProcessor()
 
-    // 3) 啟動 loop：讀一幀 → 丟給 processor
     LaunchedEffect(Unit) {
         processor.start()
         while (isActive) {
-            val frame = source.nextFrame()
-            if (frame != null) {
-                processor.submit(frame)
-            } else {
-                // 沒有下一幀了就結束 loop
-                break
-            }
-            delay(50) // 模擬 20fps
+            val frame = source.nextFrame() ?: break
+            processor.submit(frame)
+            delay(50)
         }
     }
 
-    // 4) 組件被銷毀時把 thread 收掉
     DisposableEffect(Unit) {
-        onDispose {
-            processor.stop()
-        }
+        onDispose { processor.stop() }
     }
 
     Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
@@ -72,24 +59,25 @@ fun ToFScreen() {
             modifier = Modifier.padding(innerPadding)
         )
     }
-}
+} // ← 只需要這一個括號結束 ToFScreen。不要再多一個。
 
 @Composable
 private fun rememberToFProcessor(): ToFProcessor {
+    val context = LocalContext.current
     return remember {
-        ToFProcessor { result ->
+        val cacheDir = java.io.File(context.filesDir, "raylut")
+        ToFProcessor(listener = { result ->
             if (result.valid) {
                 Log.d("ToF", "3D points = ${result.pointsCount}")
                 result.samplePoints.forEachIndexed { i, p ->
-                    Log.d(
-                        "ToF",
+                    Log.d("ToF",
                         "pt[$i] pix=(${p.u},${p.v}) depth=${p.depthMm}mm amp=${p.amp} → X=${p.x}, Y=${p.y}, Z=${p.z}"
                     )
                 }
             } else {
                 Log.d("ToF", "invalid frame")
             }
-        }
+        }, cacheDir = cacheDir)
     }
 }
 
