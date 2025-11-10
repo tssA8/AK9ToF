@@ -227,24 +227,45 @@ class ToFProcessor(
     // ==============================
     // 內參與 LUT 構建（支援可選快取）
     // ==============================
+//    private fun ensureIntrinsicsAndRays(w: Int, h: Int) {
+//        val needRebuild = (activeK == null || activeK!!.width != w || activeK!!.height != h)
+//        if (!needRebuild) return
+//
+//        // 以 640x480 為母參數等比例推到當前尺寸；若 SDK 已整流，打開 forceRectified
+//        activeK = CalibRepo.deriveForSize(newW = w, newH = h /*, forceRectified = true*/)
+//
+//        val dir = cacheDir  // ← 拷貝到區域變數，智慧轉型就能生效
+//        rays = if (dir != null) {
+//            if (!dir.exists()) dir.mkdirs()
+//            val cacheFile = LutBuilder.cacheFile(dir, activeK!!)
+//            Log.d("ToF", "LUT path = ${cacheFile.absolutePath}")
+//            LutBuilder.load(cacheFile, activeK!!) ?: LutBuilder.build(activeK!!).also {
+//                LutBuilder.save(cacheFile, it)
+//            }
+//        } else {
+//            RaysLUT(activeK!!)
+//        }
+//        printedIntrinsics = false
+//    }
     private fun ensureIntrinsicsAndRays(w: Int, h: Int) {
         val needRebuild = (activeK == null || activeK!!.width != w || activeK!!.height != h)
         if (!needRebuild) return
 
-        // 以 640x480 為母參數等比例推到當前尺寸；若 SDK 已整流，打開 forceRectified
-        activeK = CalibRepo.deriveForSize(newW = w, newH = h /*, forceRectified = true*/)
+        // 🔧 暫時：用 ToF 自己的 FOV 估計內參（請替換成你模組的實際 FOV）
+        val fovXdeg = 60.0
+        val fovYdeg = 45.0
+        val fx = (w / (2.0 * kotlin.math.tan(Math.toRadians(fovXdeg/2)))).toFloat()
+        val fy = (h / (2.0 * kotlin.math.tan(Math.toRadians(fovYdeg/2)))).toFloat()
+        val cx = (w - 1) / 2f
+        val cy = (h - 1) / 2f
+        activeK = Intrinsics(
+            width = w, height = h,
+            fx = fx, fy = fy, cx = cx, cy = cy,
+            rectified = true // ToF SDK 多半已整流；先視為 true
+        )
 
-        val dir = cacheDir  // ← 拷貝到區域變數，智慧轉型就能生效
-        rays = if (dir != null) {
-            if (!dir.exists()) dir.mkdirs()
-            val cacheFile = LutBuilder.cacheFile(dir, activeK!!)
-            Log.d("ToF", "LUT path = ${cacheFile.absolutePath}")
-            LutBuilder.load(cacheFile, activeK!!) ?: LutBuilder.build(activeK!!).also {
-                LutBuilder.save(cacheFile, it)
-            }
-        } else {
-            RaysLUT(activeK!!)
-        }
+        // 重建 LUT
+        rays = RaysLUT(activeK!!)
         printedIntrinsics = false
     }
 
