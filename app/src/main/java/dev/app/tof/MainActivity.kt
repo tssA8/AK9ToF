@@ -38,28 +38,48 @@ class MainActivity : ComponentActivity() {
 fun ToFScreen() {
     val context = LocalContext.current
     val source: ToFSource = remember { RawToFSource(context) }
-    val processor = rememberToFProcessor()
 
+    // 建議把 LUT 快取放到 app 的 externalFiles（若要存到 SDCard 你之前已加權限）
+    val cacheDir = remember {
+        // 改成 getExternalFilesDir 可讓你看到實體檔案 /Android/data/<pkg>/files/raylut
+        java.io.File(context.getExternalFilesDir(null), "raylut")
+    }
+    val processor = remember {
+        ToFProcessor(
+            listener = { result ->
+                if (result.valid) {
+                    Log.d("ToF","3D points = ${result.pointsCount}")
+                } else {
+                    Log.d("ToF","invalid frame")
+                }
+            },
+            cacheDir = cacheDir
+        )
+    }
+
+    // 讀 PCD（只做一次），交給 processor 做 LUT 對照驗證
     LaunchedEffect(Unit) {
+        try {
+            val cloud = PcdReader.readAsciiFromRaw(context, R.raw.pcd_1) // 你放的檔名 pcd_1.pcd
+            processor.updateSdkCloud(cloud.x, cloud.y, cloud.z)
+            Log.d("ToF","Loaded PCD points = ${cloud.x.size}")
+        } catch (t: Throwable) {
+            Log.w("ToF","PCD load failed: ${t.message}")
+        }
+
         processor.start()
         while (isActive) {
             val frame = source.nextFrame() ?: break
             processor.submit(frame)
-            delay(50)
+            // 單幀測試即可；若要模擬串流，加 delay
+            // delay(50)
         }
     }
 
     DisposableEffect(Unit) {
         onDispose { processor.stop() }
     }
-
-    Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
-        Greeting(
-            name = "Android ToF",
-            modifier = Modifier.padding(innerPadding)
-        )
-    }
-} // ← 只需要這一個括號結束 ToFScreen。不要再多一個。
+}
 
 
 fun pickRaylutCacheDir(context: android.content.Context): java.io.File {

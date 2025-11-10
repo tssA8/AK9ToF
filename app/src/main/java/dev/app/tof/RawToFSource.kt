@@ -2,6 +2,7 @@ package dev.app.tof
 
 import android.content.Context
 import android.content.res.Resources
+import android.util.Log
 
 class RawToFSource(
     private val ctx: Context,
@@ -16,18 +17,17 @@ class RawToFSource(
 
         val res = ctx.resources
         val depth = readRawToIntArray(res, R.raw.depth1, width, height)
-        val amp   = readRawToIntArray(res, R.raw.amp_1, width, height)
+        val amp   = readRawToIntArray(res, R.raw.amp_1,  width, height)
 
         used = true
         return ToFFrame(
-            depth = depth,
-            amp = amp,
             width = width,
             height = height,
-            timestampNanos = System.nanoTime()   // ← 補這個
+            depth = depth,
+            amp = amp,
+            timestampNanos = System.nanoTime()
         )
     }
-
 
     private fun readRawToIntArray(
         res: Resources,
@@ -35,21 +35,29 @@ class RawToFSource(
         w: Int,
         h: Int
     ): IntArray {
-        val input = res.openRawResource(rawId)
-        val text = input.bufferedReader().use { it.readText() }
-        val arr = IntArray(w * h)
+        val need = w * h
+        val out = IntArray(need)
         var p = 0
-        text.lineSequence().forEach { line ->
-            val parts = line.trim()
-                .split(" ", "\t", ",")
-                .filter { it.isNotEmpty() }
-            for (v in parts) {
-                if (p >= arr.size) break
-                // 這裡用 toInt() 就不會爆了
-                val value = v.toInt()
-                arr[p++] = value
+        val sep = Regex("[,\\s]+")
+
+        res.openRawResource(rawId).bufferedReader().useLines { lines ->
+            lines.forEach { line ->
+                if (p >= need) return@forEach
+                val s = line.trim().removePrefix("\uFEFF") // 去 BOM
+                if (s.isEmpty()) return@forEach
+                s.split(sep).forEach { tok ->
+                    if (tok.isEmpty() || p >= need) return@forEach
+                    // 若遇到非數字，直接略過或拋錯都可；這裡選擇拋錯讓資料更嚴謹
+                    val v = tok.toIntOrNull()
+                        ?: throw IllegalArgumentException("Non-integer token '$tok' in rawId=$rawId")
+                    out[p++] = v
+                }
             }
         }
-        return arr
+
+        require(p == need) {
+            "Raw data size mismatch for rawId=$rawId: read=$p, expected=$need (width=$w, height=$h)"
+        }
+        return out
     }
 }
