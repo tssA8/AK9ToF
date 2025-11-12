@@ -5,9 +5,6 @@ import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -17,7 +14,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.tooling.preview.Preview
 import dev.app.tof.ui.theme.TofTheme
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 
 class MainActivity : ComponentActivity() {
@@ -60,7 +56,7 @@ fun ToFScreen() {
     // 讀 PCD（只做一次），交給 processor 做 LUT 對照驗證
     LaunchedEffect(Unit) {
         try {
-            val cloud = PcdReader.readAsciiFromRaw(context, R.raw.pcd_1) // 你放的檔名 pcd_1.pcd
+            val cloud = PcdReader.readAsciiFromRaw(context, R.raw.pcd_2) // 你放的檔名 pcd_1.pcd
             processor.updateSdkCloud(cloud.x, cloud.y, cloud.z)
             Log.d("ToF","Loaded PCD points = ${cloud.x.size}")
         } catch (t: Throwable) {

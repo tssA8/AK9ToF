@@ -2,7 +2,6 @@ package dev.app.tof
 
 import android.content.Context
 import android.content.res.Resources
-import android.util.Log
 
 class RawToFSource(
     private val ctx: Context,
@@ -16,8 +15,8 @@ class RawToFSource(
         if (used) return null
 
         val res = ctx.resources
-        val depth = readRawToIntArray(res, R.raw.depth1, width, height)
-        val amp   = readRawToIntArray(res, R.raw.amp_1,  width, height)
+        val depth = readRawToIntArray(res, R.raw.depth2, width, height)
+        val amp   = readRawToIntArray(res, R.raw.amp_2,  width, height)
 
         used = true
         return ToFFrame(
