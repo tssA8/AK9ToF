@@ -291,46 +291,85 @@ class ToFProcessor(
     // ==============================
     data class Plane(val normal: FloatArray, val d: Float)
 
-    private fun estimatePlane(points: List<Debug3DPoint>): Plane? {
+    /**
+     * 使用 PCA（主成分分析）計算平面法向量。
+     * 相比 LLS，更穩定、不受 z 軸比例影響。
+     */
+    private fun estimatePlanePca(points: List<Debug3DPoint>): Plane? {
         if (points.size < 3) return null
 
-        var sumX = 0.0; var sumY = 0.0; var sumZ = 0.0
-        var sumXX = 0.0; var sumYY = 0.0; var sumXY = 0.0
-        var sumXZ = 0.0; var sumYZ = 0.0
-
-        for (p in points) {
-            val x = p.x.toDouble()
-            val y = p.y.toDouble()
-            val z = p.z.toDouble()
-            sumX += x; sumY += y; sumZ += z
-            sumXX += x*x; sumYY += y*y; sumXY += x*y
-            sumXZ += x*z; sumYZ += y*z
-        }
-
+        // 計算中心點
+        var cx = 0.0; var cy = 0.0; var cz = 0.0
+        for (p in points) { cx += p.x; cy += p.y; cz += p.z }
         val n = points.size.toDouble()
-        val Sxx = sumXX; val Syy = sumYY; val Sxy = sumXY
-        val Sxz = sumXZ; val Syz = sumYZ
-        val det = Sxx * Syy - Sxy * Sxy
-        if (abs(det) < 1e-8) {
-            val zBar = sumZ / n
-            return Plane(floatArrayOf(0f, 0f, 1f), (-zBar).toFloat())
+        cx /= n; cy /= n; cz /= n
+
+        // 計算共變異矩陣
+        var sxx = 0.0; var sxy = 0.0; var sxz = 0.0
+        var syy = 0.0; var syz = 0.0; var szz = 0.0
+        for (p in points) {
+            val x = p.x - cx
+            val y = p.y - cy
+            val z = p.z - cz
+            sxx += x * x
+            sxy += x * y
+            sxz += x * z
+            syy += y * y
+            syz += y * z
+            szz += z * z
+        }
+        sxx /= n; sxy /= n; sxz /= n
+        syy /= n; syz /= n; szz /= n
+
+        // 定義乘法：C·v
+        fun mul(v: DoubleArray) = doubleArrayOf(
+            sxx * v[0] + sxy * v[1] + sxz * v[2],
+            sxy * v[0] + syy * v[1] + syz * v[2],
+            sxz * v[0] + syz * v[1] + szz * v[2]
+        )
+
+        // 求最小特徵向量 (power iteration，25 次即可收斂)
+        var v = doubleArrayOf(0.0, 0.0, 1.0)
+        repeat(25) {
+            val m = mul(v)
+            val norm = sqrt(m[0] * m[0] + m[1] * m[1] + m[2] * m[2]) + 1e-12
+            v[0] = m[0] / norm
+            v[1] = m[1] / norm
+            v[2] = m[2] / norm
         }
 
-        val a = ( Syy * Sxz - Sxy * Syz ) / det
-        val b = ( Sxx * Syz - Sxy * Sxz ) / det
-        val xBar = sumX / n; val yBar = sumY / n; val zBar = sumZ / n
-        val c = zBar - a * xBar - b * yBar   // z = a x + b y + c
+        // 用 cross product 算出穩定法向量
+        var u = doubleArrayOf(-v[1], v[0], 0.0)
+        var w = mul(u)
+        val dot = w[0] * u[0] + w[1] * u[1] + w[2] * u[2]
+        w[0] -= dot * u[0]
+        w[1] -= dot * u[1]
+        w[2] -= dot * u[2]
+        val wn = sqrt(w[0] * w[0] + w[1] * w[1] + w[2] * w[2]) + 1e-12
+        w[0] /= wn; w[1] /= wn; w[2] /= wn
 
-        val nuX = a; val nuY = b; val nuZ = -1.0
-        val scale = sqrt(nuX*nuX + nuY*nuY + nuZ*nuZ)
-        val nx = (nuX / scale).toFloat()
-        val ny = (nuY / scale).toFloat()
-        val nz = (nuZ / scale).toFloat()
-        val d = (c / scale).toFloat()
-        return Plane(floatArrayOf(nx, ny, nz), d)
+        val nx = v[1] * w[2] - v[2] * w[1]
+        val ny = v[2] * w[0] - v[0] * w[2]
+        val nz = v[0] * w[1] - v[1] * w[0]
+
+        var norm = sqrt(nx * nx + ny * ny + nz * nz) + 1e-12
+        var n0 = floatArrayOf(
+            (nx / norm).toFloat(),
+            (ny / norm).toFloat(),
+            (nz / norm).toFloat()
+        )
+
+        // 翻正朝向 +Z
+        if (n0[2] < 0f) n0 = floatArrayOf(-n0[0], -n0[1], -n0[2])
+
+        // 平面方程 ax + by + cz + d = 0
+        val d = -(n0[0] * cx + n0[1] * cy + n0[2] * cz).toFloat()
+
+        return Plane(n0, d)
     }
 
-    private fun estimatePlaneRansac(points: List<Debug3DPoint>, iters:Int=120): Plane? {
+
+    private fun estimatePlaneRansac(points: List<Debug3DPoint>, iters: Int = 120): Plane? {
         if (points.size < 3) return null
         val rnd = java.util.Random()
         var bestPlane: Plane? = null
