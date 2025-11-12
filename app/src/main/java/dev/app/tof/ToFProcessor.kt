@@ -186,7 +186,7 @@ class ToFProcessor(
             Log.d(TAG, "LUT-vs-SDK count=${stats.count}, rmse=${"%.1f".format(stats.rmseOverallMm)}mm, p95=${"%.1f".format(stats.p95OverallMm)}mm")
         }
 
-        // 6) 平面擬合（RANSAC → LLS）
+        // 6) 平面擬合（RANSAC → PCA 精修）
         val plane = estimatePlaneRansac(points) ?: run {
             Log.w(TAG, "plane fit failed")
             return CalibrationResult(valid = false, pointsCount = points.size, samplePoints = points.take(5))
@@ -290,8 +290,6 @@ class ToFProcessor(
         printedIntrinsics = false
     }
 
-
-
     @Volatile private var latestSdkCloud: Triple<FloatArray, FloatArray, FloatArray>? = null
     fun updateSdkCloud(x: FloatArray, y: FloatArray, z: FloatArray) {
         latestSdkCloud = Triple(x, y, z)
@@ -312,10 +310,7 @@ class ToFProcessor(
     // ==============================
     data class Plane(val normal: FloatArray, val d: Float)
 
-    /**
-     * 使用 PCA（主成分分析）計算平面法向量。
-     * 相比 LLS，更穩定、不受 z 軸比例影響。
-     */
+    /** 使用 PCA（主成分分析）計算平面法向量。 */
     private fun estimatePlanePca(points: List<Debug3DPoint>): Plane? {
         if (points.size < 3) return null
 
@@ -342,7 +337,6 @@ class ToFProcessor(
         sxx /= n; sxy /= n; sxz /= n
         syy /= n; syz /= n; szz /= n
 
-        // 定義乘法：C·v
         fun mul(v: DoubleArray) = doubleArrayOf(
             sxx * v[0] + sxy * v[1] + sxz * v[2],
             sxy * v[0] + syy * v[1] + syz * v[2],
@@ -363,9 +357,7 @@ class ToFProcessor(
         var u = doubleArrayOf(-v[1], v[0], 0.0)
         var w = mul(u)
         val dot = w[0] * u[0] + w[1] * u[1] + w[2] * u[2]
-        w[0] -= dot * u[0]
-        w[1] -= dot * u[1]
-        w[2] -= dot * u[2]
+        w[0] -= dot * u[0]; w[1] -= dot * u[1]; w[2] -= dot * u[2]
         val wn = sqrt(w[0] * w[0] + w[1] * w[1] + w[2] * w[2]) + 1e-12
         w[0] /= wn; w[1] /= wn; w[2] /= wn
 
@@ -388,7 +380,6 @@ class ToFProcessor(
 
         return Plane(n0, d)
     }
-
 
     private fun estimatePlaneRansac(points: List<Debug3DPoint>, iters: Int = 120): Plane? {
         if (points.size < 3) return null
@@ -459,7 +450,6 @@ class ToFProcessor(
         return if (rRefine <= rRansac * 1.2) refined else bp
     }
 
-
     private fun median3(a: IntArray, w: Int, h: Int): IntArray {
         val out = IntArray(a.size)
         val window = IntArray(9)
@@ -524,22 +514,19 @@ class ToFProcessor(
         )
     }
 
-
+    // =======（保留：可能外部會用）=======
     private fun validatePlane(points: List<Debug3DPoint>): LutPlaneMetrics? {
         if (points.size < 50) return null
 
-        // --- 用你現有的 RANSAC + LLS ---
         val plane = estimatePlaneRansac(points) ?: return null
         var n = plane.normal; var d = plane.d
         if (n[2] < 0f) { n = floatArrayOf(-n[0], -n[1], -n[2]); d = -d }
 
-        // 角度
         val rawTilt = Math.toDegrees(kotlin.math.acos(n[2].coerceIn(-1f, 1f).toDouble()))
         val tiltDeg = if (rawTilt > 90) 180 - rawTilt else rawTilt
         val yawDeg = Math.toDegrees(kotlin.math.atan2(n[0].toDouble(), n[2].toDouble()))
         val pitchDeg = Math.toDegrees(kotlin.math.atan2(-n[1].toDouble(), kotlin.math.sqrt((n[0]*n[0] + n[2]*n[2]).toDouble())))
 
-        // RMSE / inliers（同你的動態閾值）
         var sumSqMm = 0.0
         var inliers = 0
         fun thM(z: Float) = maxOf(0.008f, 0.005f * z) // 8mm or 0.5%
@@ -562,8 +549,6 @@ class ToFProcessor(
             pointsUsed = points.size
         )
     }
-
-
 
     data class LutPlaneMetrics(
         val rmseMm: Double,
