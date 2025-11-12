@@ -381,14 +381,15 @@ class ToFProcessor(
             var nx = uy * vz - uz * vy
             var ny = uz * vx - ux * vz
             var nz = ux * vy - uy * vx
-            val norm = sqrt(nx*nx + ny*ny + nz*nz)
+            val norm = sqrt(nx * nx + ny * ny + nz * nz)
             if (norm < 1e-6) return null
             nx /= norm; ny /= norm; nz /= norm
-            var d = -(nx*p0.x + ny*p0.y + nz*p0.z)
+            var d = -(nx * p0.x + ny * p0.y + nz * p0.z)
             if (nz < 0f) { nx = -nx; ny = -ny; nz = -nz; d = -d }
             return Plane(floatArrayOf(nx, ny, nz), d)
         }
 
+        // --- RANSAC 主回圈 ---
         repeat(iters) {
             val i0 = rnd.nextInt(points.size)
             var i1 = rnd.nextInt(points.size)
@@ -401,7 +402,7 @@ class ToFProcessor(
 
             var cnt = 0
             for (p in points) {
-                val distM = abs(pl.normal[0]*p.x + pl.normal[1]*p.y + pl.normal[2]*p.z + pl.d)
+                val distM = abs(pl.normal[0] * p.x + pl.normal[1] * p.y + pl.normal[2] * p.z + pl.d)
                 if (distM <= max(0.008f, 0.005f * p.z)) cnt++
             }
             if (cnt > bestInliers) {
