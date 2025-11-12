@@ -30,50 +30,71 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+
+data class Case(
+    val label: String,       // "0cm" / "12.8cm"
+    val depthId: Int,        // R.raw.depth1 / depth2
+    val ampId: Int,          // R.raw.amp_1 / amp_2
+    val pcdId: Int           // R.raw.pcd_1 / pcd_2
+)
+
 @Composable
 fun ToFScreen() {
     val context = LocalContext.current
-    val source: ToFSource = remember { RawToFSource(context) }
 
-    // 建議把 LUT 快取放到 app 的 externalFiles（若要存到 SDCard 你之前已加權限）
-    val cacheDir = remember {
-        // 改成 getExternalFilesDir 可讓你看到實體檔案 /Android/data/<pkg>/files/raylut
-        java.io.File(context.getExternalFilesDir(null), "raylut")
-    }
-    val processor = remember {
-        ToFProcessor(
-            listener = { result ->
-                if (result.valid) {
-                    Log.d("ToF","3D points = ${result.pointsCount}")
-                } else {
-                    Log.d("ToF","invalid frame")
-                }
-            },
-            cacheDir = cacheDir
+    // 兩個測試案例：1=0cm, 2=12.8cm
+    val cases = remember {
+        listOf(
+            Case("0cm",     R.raw.depth1, R.raw.amp_1, R.raw.pcd_1),
+            Case("12.8cm",  R.raw.depth2, R.raw.amp_2, R.raw.pcd_2)
         )
     }
 
-    // 讀 PCD（只做一次），交給 processor 做 LUT 對照驗證
     LaunchedEffect(Unit) {
-        try {
-            val cloud = PcdReader.readAsciiFromRaw(context, R.raw.pcd_2) // 你放的檔名 pcd_1.pcd
-            processor.updateSdkCloud(cloud.x, cloud.y, cloud.z)
-            Log.d("ToF","Loaded PCD points = ${cloud.x.size}")
-        } catch (t: Throwable) {
-            Log.w("ToF","PCD load failed: ${t.message}")
+        for (c in cases) {
+            Log.d("ToF", "===== Running case: ${c.label} =====")
+
+            // 每組案例各自建立 processor（乾淨狀態）
+            val cacheDir = java.io.File(context.getExternalFilesDir(null), "raylut").apply { mkdirs() }
+            val processor = ToFProcessor(
+                listener = { result ->
+                    if (result.valid) {
+                        result.plane?.let { p ->
+                            Log.d("ToF",
+                                "n=(${p.nx},${p.ny},${p.nz}), d=${"%.6f".format(p.dMeters)} m (${p.dMm.toInt()} mm), " +
+                                        "tilt=${"%.2f".format(p.tiltDeg)}°, pitch=${"%.2f".format(p.pitchDeg)}°, yaw=${"%.2f".format(p.yawDeg)}°, " +
+                                        "rmse=${"%.1f".format(p.rmseMm)}mm, inliers=${p.inliers}/${p.total} (${p.inlierRatio*100}%)"
+                            )
+                        }
+                    }
+                },
+                cacheDir = cacheDir
+            )
+
+            // 載入對應這組的參考 PCD
+            try {
+                val cloud = PcdReader.readAsciiFromRaw(context, c.pcdId)
+                processor.updateSdkCloud(cloud.x, cloud.y, cloud.z) // 你的接口名稱照舊
+                Log.d("ToF", "[${c.label}] Loaded PCD points = ${cloud.x.size}")
+            } catch (t: Throwable) {
+                Log.w("ToF","[${c.label}] PCD load failed: ${t.message}")
+            }
+
+            // 準備這組 frame 的資料來源
+            val source: ToFSource = RawToFSource(
+                ctx = context,
+                depthRawId = c.depthId,
+                ampRawId = c.ampId,
+                width = 120, height = 90
+            )
+
+            // 跑單幀（若要模擬串流可多幀+delay）
+            processor.start()
+            source.nextFrame()?.let { processor.submit(it) }
+            processor.stop()
         }
 
-        processor.start()
-        while (isActive) {
-            val frame = source.nextFrame() ?: break
-            processor.submit(frame)
-            // 單幀測試即可；若要模擬串流，加 delay
-            // delay(50)
-        }
-    }
-
-    DisposableEffect(Unit) {
-        onDispose { processor.stop() }
+        Log.d("ToF", "===== All cases done =====")
     }
 }
 
