@@ -5,6 +5,8 @@ import android.content.res.Resources
 
 class RawToFSource(
     private val ctx: Context,
+    private val depthRawId: Int,
+    private val ampRawId: Int,
     private val width: Int = 120,
     private val height: Int = 90
 ) : ToFSource {
@@ -15,8 +17,8 @@ class RawToFSource(
         if (used) return null
 
         val res = ctx.resources
-        val depth = readRawToIntArray(res, R.raw.depth2, width, height)
-        val amp   = readRawToIntArray(res, R.raw.amp_2,  width, height)
+        val depth = readRawToIntArray(res, depthRawId, width, height)
+        val amp   = readRawToIntArray(res, ampRawId,   width, height)
 
         used = true
         return ToFFrame(
