@@ -413,13 +413,30 @@ class ToFProcessor(
         val bp = bestPlane ?: return null
         val inlierSet = ArrayList<Debug3DPoint>(bestInliers.coerceAtLeast(0))
         for (p in points) {
-            val distM = abs(bp.normal[0]*p.x + bp.normal[1]*p.y + bp.normal[2]*p.z + bp.d)
+            val distM = abs(bp.normal[0] * p.x + bp.normal[1] * p.y + bp.normal[2] * p.z + bp.d)
             if (distM <= max(0.008f, 0.005f * p.z)) inlierSet.add(p)
         }
         Log.d(TAG, "RANSAC inliers=${inlierSet.size}/${points.size}")
 
-        return estimatePlane(inlierSet)
+        // --- 精修 (PCA法) ---
+        val refined = estimatePlanePca(inlierSet) ?: bp
+
+        fun rmseOn(set: List<Debug3DPoint>, pl: Plane): Double {
+            var s = 0.0
+            for (p in set) {
+                val d = abs(pl.normal[0] * p.x + pl.normal[1] * p.y + pl.normal[2] * p.z + pl.d)
+                s += d * d
+            }
+            return if (set.isEmpty()) 1e9 else sqrt(s / set.size)
+        }
+
+        val rRansac = rmseOn(inlierSet, bp)
+        val rRefine = rmseOn(inlierSet, refined)
+
+        // --- 守門員機制 ---
+        return if (rRefine <= rRansac * 1.2) refined else bp
     }
+
 
     private fun median3(a: IntArray, w: Int, h: Int): IntArray {
         val out = IntArray(a.size)
