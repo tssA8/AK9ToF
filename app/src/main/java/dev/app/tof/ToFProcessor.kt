@@ -10,7 +10,7 @@ import kotlin.math.max
 import kotlin.math.sqrt
 
 // ----------------------------------------------------
-// 資料結構（保持你原本結構）
+// 資料結構（保持你原本結構 + 新增 PlaneFitInfo）
 // ----------------------------------------------------
 data class Debug3DPoint(
     val u: Int,
@@ -22,24 +22,44 @@ data class Debug3DPoint(
     val z: Float
 )
 
+/** 對外提供完整的平面資訊 */
+data class PlaneFitInfo(
+    val nx: Float, val ny: Float, val nz: Float,  // 單位：無量綱
+    val dMeters: Float,                           // 平面 ax+by+cz+d=0 的 d（單位 m）
+    val dMm: Float,                               // d 的 mm 版本（方便跟 PCD/同事對齊）
+    val tiltDeg: Double,
+    val pitchDeg: Double,
+    val yawDeg: Double,
+    val rmseMm: Double,
+    val inliers: Int,
+    val total: Int
+) {
+    val inlierRatio: Double get() = if (total > 0) inliers.toDouble() / total else 0.0
+}
+
 data class CalibrationResult(
     val valid: Boolean,
     val pointsCount: Int,
     val samplePoints: List<Debug3DPoint> = emptyList(),
+
+    // === 舊欄位（相容）===
     val pitchDeg: Double? = null,
     val yawDeg: Double? = null,
     val tiltDeg: Double? = null,
     val rmseMm: Double? = null,
-    val inlierRatio: Double? = null
+    val inlierRatio: Double? = null,
+
+    // === 新增：完整平面資訊 ===
+    val plane: PlaneFitInfo? = null
 )
 
 
 // ==============================
-//  ToFProcessor（改：可選 cacheDir）
+//  ToFProcessor（改：可選 cacheDir + 對外平面資訊）
 // ==============================
 class ToFProcessor(
     private val listener: (CalibrationResult) -> Unit,
-    private val cacheDir: File? = null   // ← 新增：給就做 LUT 快取；不給就只在記憶體建
+    private val cacheDir: File? = null   // ← 給就做 LUT 快取；不給就只在記憶體建
 ) {
     private val queue = ArrayBlockingQueue<ToFFrame>(3)
     @Volatile private var running = false
@@ -190,8 +210,8 @@ class ToFProcessor(
         var sumSqMm = 0.0
         var inliers = 0
         fun dynamicInlierThM(zMeters: Float): Float {
-            val byPercent = 0.005f * zMeters
-            return max(0.008f, byPercent)
+            val byPercent = 0.005f * zMeters   // 0.5%
+            return max(0.008f, byPercent)      // at least 8mm
         }
         for (p in points) {
             val distM = abs(n[0]*p.x + n[1]*p.y + n[2]*p.z + d)
@@ -204,49 +224,50 @@ class ToFProcessor(
 
         // 10) Log sample
         val sample = points.take(5)
-        Log.d(TAG, "plane n=(${n[0]}, ${n[1]}, ${n[2]}), d=$d, " +
-                "tilt=${"%.2f".format(tiltDeg)}°, pitch=${"%.2f".format(pitchDeg)}°, yaw=${"%.2f".format(yawDeg)}°, " +
-                "rmse=${"%.1f".format(rmseMm)}mm, inliers=${"%.1f".format(inlierRatio*100)}%, 3D points=${points.size}")
+        Log.d(
+            TAG,
+            "plane n=(${n[0]}, ${n[1]}, ${n[2]}), d=${"%.6f".format(d)} m (${(d*1000f).toInt()} mm), " +
+                    "tilt=${"%.2f".format(tiltDeg)}°, pitch=${"%.2f".format(pitchDeg)}°, yaw=${"%.2f".format(yawDeg)}°, " +
+                    "rmse=${"%.1f".format(rmseMm)}mm, inliers=${"%.1f".format(inlierRatio*100)}%, 3D points=${points.size}"
+        )
         if (sample.isNotEmpty()) {
             val p0 = sample[0]
             Log.d(TAG, "pt[0] pix=(${p0.u},${p0.v}) depth=${p0.depthMm}mm amp=${p0.amp} → X=${p0.x}, Y=${p0.y}, Z=${p0.z}")
         }
 
-        return CalibrationResult(
-            valid = true,
-            pointsCount = points.size,
-            samplePoints = sample,
+        // 11) 封裝 PlaneFitInfo + 回傳
+        val planeInfo = PlaneFitInfo(
+            nx = n[0], ny = n[1], nz = n[2],
+            dMeters = d,
+            dMm = d * 1000f,
             tiltDeg = tiltDeg,
             pitchDeg = pitchDeg,
             yawDeg = yawDeg,
             rmseMm = rmseMm.toDouble(),
-            inlierRatio = inlierRatio.toDouble()
+            inliers = inliers,
+            total = points.size
+        )
+
+        return CalibrationResult(
+            valid = true,
+            pointsCount = points.size,
+            samplePoints = sample,
+
+            // 舊欄位（相容）
+            tiltDeg = tiltDeg,
+            pitchDeg = pitchDeg,
+            yawDeg = yawDeg,
+            rmseMm = rmseMm.toDouble(),
+            inlierRatio = inlierRatio.toDouble(),
+
+            // 新欄位
+            plane = planeInfo
         )
     }
 
     // ==============================
     // 內參與 LUT 構建（支援可選快取）
     // ==============================
-//    private fun ensureIntrinsicsAndRays(w: Int, h: Int) {
-//        val needRebuild = (activeK == null || activeK!!.width != w || activeK!!.height != h)
-//        if (!needRebuild) return
-//
-//        // 以 640x480 為母參數等比例推到當前尺寸；若 SDK 已整流，打開 forceRectified
-//        activeK = CalibRepo.deriveForSize(newW = w, newH = h /*, forceRectified = true*/)
-//
-//        val dir = cacheDir  // ← 拷貝到區域變數，智慧轉型就能生效
-//        rays = if (dir != null) {
-//            if (!dir.exists()) dir.mkdirs()
-//            val cacheFile = LutBuilder.cacheFile(dir, activeK!!)
-//            Log.d("ToF", "LUT path = ${cacheFile.absolutePath}")
-//            LutBuilder.load(cacheFile, activeK!!) ?: LutBuilder.build(activeK!!).also {
-//                LutBuilder.save(cacheFile, it)
-//            }
-//        } else {
-//            RaysLUT(activeK!!)
-//        }
-//        printedIntrinsics = false
-//    }
     private fun ensureIntrinsicsAndRays(w: Int, h: Int) {
         val needRebuild = (activeK == null || activeK!!.width != w || activeK!!.height != h)
         if (!needRebuild) return
