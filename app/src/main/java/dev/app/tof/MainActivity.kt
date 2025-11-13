@@ -7,14 +7,14 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.tooling.preview.Preview
 import dev.app.tof.ui.theme.TofTheme
-import kotlinx.coroutines.isActive
+
+// ---------------------- MainActivity ----------------------
 
 class MainActivity : ComponentActivity() {
 
@@ -24,29 +24,49 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             TofTheme {
-                ToFScreen()  // 不用再傳 folder 了，我們從 res/raw 讀
+                ToFScreen()
             }
         }
     }
 }
 
-
+/**
+ * 一個測試案例：
+ * - label: 只是用來命名 / log
+ * - depthId / ampId / pcdId: 對應 res/raw 檔
+ * - baselineMm: 相對第一顆 ToF (0cm / pcd_1) 在 X 方向的位移 (mm)
+ */
 data class Case(
-    val label: String,       // "0cm" / "12.8cm"
+    val label: String,       // "0cm" / "31.02cm"
     val depthId: Int,        // R.raw.depth1 / depth2
     val ampId: Int,          // R.raw.amp_1 / amp_2
-    val pcdId: Int           // R.raw.pcd_1 / pcd_2
+    val pcdId: Int,          // R.raw.pcd_1 / pcd_2
+    val baselineMm: Double   // 0.0 / 310.2
 )
+
+// ---------------------- UI / pipeline ----------------------
 
 @Composable
 fun ToFScreen() {
     val context = LocalContext.current
 
-    // 兩個測試案例：1=0cm, 2=12.8cm
+    // 兩個測試案例：1 = 0cm (ref), 2 = 31.02cm (baseline 310.2mm)
     val cases = remember {
         listOf(
-            Case("0cm",     R.raw.depth1, R.raw.amp_1, R.raw.pcd_1),
-            Case("12.8cm",  R.raw.depth2, R.raw.amp_2, R.raw.pcd_2)
+            Case(
+                label = "0cm",
+                depthId = R.raw.depth1,
+                ampId = R.raw.amp_1,
+                pcdId = R.raw.pcd_1,
+                baselineMm = 0.0
+            ),
+            Case(
+                label = "31.02cm",
+                depthId = R.raw.depth2,
+                ampId = R.raw.amp_2,
+                pcdId = R.raw.pcd_2,
+                baselineMm = 310.2  // 31.02 cm
+            )
         )
     }
 
@@ -56,7 +76,7 @@ fun ToFScreen() {
 
             val cacheDir = java.io.File(context.getExternalFilesDir(null), "raylut").apply { mkdirs() }
 
-            // 先宣告，等一下 listener 會用到它
+            // 先宣告，listener 會用到
             lateinit var processor: ToFProcessor
 
             processor = ToFProcessor(
@@ -67,16 +87,15 @@ fun ToFScreen() {
                                 "ToF",
                                 "n=(${p.nx},${p.ny},${p.nz}), d=${"%.6f".format(p.dMeters)} m (${p.dMm.toInt()} mm), " +
                                         "tilt=${"%.2f".format(p.tiltDeg)}°, pitch=${"%.2f".format(p.pitchDeg)}°, yaw=${"%.2f".format(p.yawDeg)}°, " +
-                                        "rmse=${"%.1f".format(p.rmseMm)}mm, inliers=${p.inliers}/${p.total} (${p.inlierRatio*100}%)"
+                                        "rmse=${"%.1f".format(p.rmseMm)}mm, inliers=${p.inliers}/${p.total} (${p.inlierRatio * 100}%)"
                             )
                         }
 
-                        // 注意：listener 被呼叫時，processor 已經完成初始化了
                         val file = CalibJsonWriter.write(
                             context = context,
                             outFileName = "tof_${c.label.replace(' ', '_').replace('.', '_')}.json",
                             intrinsics = processor.getActiveIntrinsics(),
-                            case = c,
+                            case = c,          // 這裡會把 baselineMm 一起寫進 JSON
                             result = result
                         )
                         Log.d("ToF", "[${c.label}] JSON saved: ${file.absolutePath}")
@@ -91,18 +110,18 @@ fun ToFScreen() {
                 processor.updateSdkCloud(cloud.x, cloud.y, cloud.z)
                 Log.d("ToF", "[${c.label}] Loaded PCD points = ${cloud.x.size}")
             } catch (t: Throwable) {
-                Log.w("ToF","[${c.label}] PCD load failed: ${t.message}")
+                Log.w("ToF", "[${c.label}] PCD load failed: ${t.message}")
             }
 
             // 建立這組的資料來源
             val source: ToFSource = RawToFSource(
                 ctx = context,
                 depthRawId = c.depthId,
-                ampRawId   = c.ampId,
-                width = 120, height = 90
+                ampRawId = c.ampId,
+                width = 120,
+                height = 90
             )
 
-            // 跑單幀（需要的話可改多幀加 delay）
             processor.start()
             source.nextFrame()?.let { processor.submit(it) }
             processor.stop()
@@ -110,55 +129,16 @@ fun ToFScreen() {
 
         Log.d("ToF", "===== All cases done =====")
     }
-
 }
 
-
-fun pickRaylutCacheDir(context: android.content.Context): java.io.File {
-    // 所有外部檔案目錄（[0] 通常是內建外部儲存；[1] 若存在多半是可移除 SD 卡）
-    val dirs = context.getExternalFilesDirs(null)
-    val sdCandidate = dirs?.firstOrNull { it != null && android.os.Environment.isExternalStorageRemovable(it) }
-    val base = sdCandidate ?: dirs?.firstOrNull() ?: context.filesDir  // 三段式 fallback
-    return java.io.File(base, "raylut").apply { mkdirs() }
-}
-
-
-@Composable
-private fun rememberToFProcessor(): ToFProcessor {
-    val context = LocalContext.current
-    return remember {
-        val cacheDir = pickRaylutCacheDir(context)   // ← 換成 SD 卡 app 目錄（若有）
-        ToFProcessor(
-            listener = { result ->
-                if (result.valid) {
-                    Log.d("ToF", "3D points = ${result.pointsCount}")
-                    result.samplePoints.forEachIndexed { i, p ->
-                        Log.d("ToF",
-                            "pt[$i] pix=(${p.u},${p.v}) depth=${p.depthMm}mm amp=${p.amp} → X=${p.x}, Y=${p.y}, Z=${p.z}"
-                        )
-                    }
-                } else {
-                    Log.d("ToF", "invalid frame")
-                }
-            },
-            cacheDir = cacheDir
-        )
-    }
-}
-
-
+// 下面 rememberToFProcessor / Greeting 保留原來的就好
 @Composable
 fun Greeting(name: String, modifier: Modifier = Modifier) {
-    Text(
-        text = "Hello $name!",
-        modifier = modifier
-    )
+    Text(text = "Hello $name!", modifier = modifier)
 }
 
 @Preview(showBackground = true)
 @Composable
 fun GreetingPreview() {
-    TofTheme {
-        Greeting("Android")
-    }
+    TofTheme { Greeting("Android") }
 }
