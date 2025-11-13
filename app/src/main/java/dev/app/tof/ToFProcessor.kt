@@ -41,17 +41,17 @@ data class CalibrationResult(
     val valid: Boolean,
     val pointsCount: Int,
     val samplePoints: List<Debug3DPoint> = emptyList(),
-
-    // === 舊欄位（相容）===
     val pitchDeg: Double? = null,
     val yawDeg: Double? = null,
     val tiltDeg: Double? = null,
     val rmseMm: Double? = null,
     val inlierRatio: Double? = null,
+    val plane: PlaneFitInfo? = null,
 
-    // === 新增：完整平面資訊 ===
-    val plane: PlaneFitInfo? = null
+    // 新增：回傳當下使用的內參快照
+    val intrinsics: Intrinsics? = null
 )
+
 
 
 // ==============================
@@ -94,6 +94,15 @@ class ToFProcessor(
             queue.offer(frame)
         }
     }
+
+
+    // ToFProcessor 內部，和 start()/stop()/submit() 同層級
+    fun getActiveIntrinsics(): Intrinsics {
+        val k = activeK
+        require(k != null) { "Intrinsics not ready yet. ensureIntrinsicsAndRays() hasn't run." }
+        return k
+    }
+
 
     // ----------------------------------------------------
     // 主流程

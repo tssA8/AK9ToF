@@ -12,9 +12,17 @@ import kotlin.math.sqrt
 //  內參資料結構與工具
 // ==============================
 data class Intrinsics(
-    val fx: Float, val fy: Float, val cx: Float, val cy: Float,
-    val k1: Float = 0f, val k2: Float = 0f, val p1: Float = 0f, val p2: Float = 0f, val k3: Float = 0f,
-    val width: Int, val height: Int,
+    val fx: Float,
+    val fy: Float,
+    val cx: Float,
+    val cy: Float,
+    val k1: Float = 0f,
+    val k2: Float = 0f,
+    val p1: Float = 0f,
+    val p2: Float = 0f,
+    val k3: Float = 0f,
+    val width: Int,
+    val height: Int,
     val rectified: Boolean = false  // 若影像已做 undistort/rectify，畸變視為 0
 )
 

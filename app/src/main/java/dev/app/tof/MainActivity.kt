@@ -54,41 +54,55 @@ fun ToFScreen() {
         for (c in cases) {
             Log.d("ToF", "===== Running case: ${c.label} =====")
 
-            // 每組案例各自建立 processor（乾淨狀態）
             val cacheDir = java.io.File(context.getExternalFilesDir(null), "raylut").apply { mkdirs() }
-            val processor = ToFProcessor(
+
+            // 先宣告，等一下 listener 會用到它
+            lateinit var processor: ToFProcessor
+
+            processor = ToFProcessor(
                 listener = { result ->
                     if (result.valid) {
                         result.plane?.let { p ->
-                            Log.d("ToF",
+                            Log.d(
+                                "ToF",
                                 "n=(${p.nx},${p.ny},${p.nz}), d=${"%.6f".format(p.dMeters)} m (${p.dMm.toInt()} mm), " +
                                         "tilt=${"%.2f".format(p.tiltDeg)}°, pitch=${"%.2f".format(p.pitchDeg)}°, yaw=${"%.2f".format(p.yawDeg)}°, " +
                                         "rmse=${"%.1f".format(p.rmseMm)}mm, inliers=${p.inliers}/${p.total} (${p.inlierRatio*100}%)"
                             )
                         }
+
+                        // 注意：listener 被呼叫時，processor 已經完成初始化了
+                        val file = CalibJsonWriter.write(
+                            context = context,
+                            outFileName = "tof_${c.label.replace(' ', '_').replace('.', '_')}.json",
+                            intrinsics = processor.getActiveIntrinsics(),
+                            case = c,
+                            result = result
+                        )
+                        Log.d("ToF", "[${c.label}] JSON saved: ${file.absolutePath}")
                     }
                 },
                 cacheDir = cacheDir
             )
 
-            // 載入對應這組的參考 PCD
+            // 載入對應這組的 PCD
             try {
                 val cloud = PcdReader.readAsciiFromRaw(context, c.pcdId)
-                processor.updateSdkCloud(cloud.x, cloud.y, cloud.z) // 你的接口名稱照舊
+                processor.updateSdkCloud(cloud.x, cloud.y, cloud.z)
                 Log.d("ToF", "[${c.label}] Loaded PCD points = ${cloud.x.size}")
             } catch (t: Throwable) {
                 Log.w("ToF","[${c.label}] PCD load failed: ${t.message}")
             }
 
-            // 準備這組 frame 的資料來源
+            // 建立這組的資料來源
             val source: ToFSource = RawToFSource(
                 ctx = context,
                 depthRawId = c.depthId,
-                ampRawId = c.ampId,
+                ampRawId   = c.ampId,
                 width = 120, height = 90
             )
 
-            // 跑單幀（若要模擬串流可多幀+delay）
+            // 跑單幀（需要的話可改多幀加 delay）
             processor.start()
             source.nextFrame()?.let { processor.submit(it) }
             processor.stop()
@@ -96,6 +110,7 @@ fun ToFScreen() {
 
         Log.d("ToF", "===== All cases done =====")
     }
+
 }
 
 
