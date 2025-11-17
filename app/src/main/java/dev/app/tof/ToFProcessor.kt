@@ -48,24 +48,25 @@ data class CalibrationResult(
     val inlierRatio: Double? = null,
     val plane: PlaneFitInfo? = null,
 
-    // 新增：回傳當下使用的內參快照
+    // 回傳當下使用的內參快照
     val intrinsics: Intrinsics? = null
 )
 
-
-
 // ==============================
-//  ToFProcessor（改：可選 cacheDir + 對外平面資訊）
+//  ToFProcessor
+//  - 一個 Processor 綁定一顆 ToF (sensorId)
+//  - 內參從 ToFIntrinsics 讀，不再用 FOV 估
 // ==============================
 class ToFProcessor(
     private val listener: (CalibrationResult) -> Unit,
-    private val cacheDir: File? = null   // ← 給就做 LUT 快取；不給就只在記憶體建
+    private val cacheDir: File? = null,                  // 目前沒用到快取，先保留參數
+    private val sensorId: ToFSensorId = ToFSensorId.SENSOR_1   // 預設第一顆
 ) {
     private val queue = ArrayBlockingQueue<ToFFrame>(3)
     @Volatile private var running = false
     private var worker: Thread? = null
 
-    // 動態推導後的內參與 LUT（依第一幀/尺寸變化建立）
+    // 依目前解析度建立的內參與 LUT
     private var activeK: Intrinsics? = null
     private var rays: RaysLUT? = null
     private var printedIntrinsics = false
@@ -95,18 +96,80 @@ class ToFProcessor(
         }
     }
 
+    // 這裡定義你有幾顆 ToF
+    enum class ToFSensorId { SENSOR_1, SENSOR_2 }
 
-    // ToFProcessor 內部，和 start()/stop()/submit() 同層級
+    data class SimpleIntrinsics(
+        val fx: Float,
+        val fy: Float,
+        val cx: Float,
+        val cy: Float
+    )
+
+    // 從 ToFIntrinsics 取得對應那顆的內參
+    fun getToFIntrinsics(sensor: ToFSensorId): SimpleIntrinsics =
+        when (sensor) {
+            ToFSensorId.SENSOR_1 ->
+                SimpleIntrinsics(
+                    fx = ToFIntrinsics.FX,
+                    fy = ToFIntrinsics.FY,
+                    cx = ToFIntrinsics.CX,
+                    cy = ToFIntrinsics.CY
+                )
+            ToFSensorId.SENSOR_2 ->
+                SimpleIntrinsics(
+                    fx = ToFIntrinsics.FX2,
+                    fy = ToFIntrinsics.FY2,
+                    cx = ToFIntrinsics.CX2,
+                    cy = ToFIntrinsics.CY2
+                )
+        }
+
+    // 外部如果要拿目前的內參（寫 JSON 用）
     fun getActiveIntrinsics(): Intrinsics {
         val k = activeK
         require(k != null) { "Intrinsics not ready yet. ensureIntrinsicsAndRays() hasn't run." }
         return k
     }
 
+    // ==============================
+    // 內參與 LUT 構建
+    // ==============================
+    private fun ensureIntrinsicsAndRays(w: Int, h: Int) {
+        val needRebuild = (activeK == null || activeK!!.width != w || activeK!!.height != h)
+        if (!needRebuild) return
 
-    // ----------------------------------------------------
+        // 依照這個 Processor 綁定的是哪一顆 ToF，拿對應的 intrinsics
+        val k = getToFIntrinsics(sensorId)
+
+        activeK = Intrinsics(
+            width = w,
+            height = h,
+            fx = k.fx,
+            fy = k.fy,
+            cx = k.cx,
+            cy = k.cy,
+            rectified = true  // 你的 k1/k2/p1/p2 都是 0，可以視為整流
+        )
+
+        // 只印一次 FOV / 內參，避免 log 爆炸
+        if (!printedIntrinsics) {
+            val fovXdeg = Math.toDegrees(2.0 * kotlin.math.atan(w / (2.0 * k.fx)))
+            val fovYdeg = Math.toDegrees(2.0 * kotlin.math.atan(h / (2.0 * k.fy)))
+            Log.d(
+                TAG,
+                "Intrinsics[$sensorId]: fx=${k.fx}, fy=${k.fy}, cx=${k.cx}, cy=${k.cy}, " +
+                        "size=${w}x$h, FOVx≈${"%.2f".format(fovXdeg)}°, FOVy≈${"%.2f".format(fovYdeg)}°"
+            )
+            printedIntrinsics = true
+        }
+
+        rays = RaysLUT(activeK!!)
+    }
+
+    // ==============================
     // 主流程
-    // ----------------------------------------------------
+    // ==============================
     private fun processFrame(frame: ToFFrame): CalibrationResult {
         val w = frame.width
         val h = frame.height
@@ -115,11 +178,8 @@ class ToFProcessor(
             return CalibrationResult(valid = false, pointsCount = 0)
         }
 
-        // 0) 建立/更新當前解析度的內參與 LUT（以 640x480 為母參數換算）
+        // 0) 建立/更新當前解析度的內參與 LUT
         ensureIntrinsicsAndRays(w, h)
-
-        // 0.1) 內參健檢（只印一次）
-        sanityPrintIntrinsicsOnce()
 
         // 1) 參數
         val zMinMm = 450
@@ -191,8 +251,12 @@ class ToFProcessor(
         }
 
         latestSdkCloud?.let { (sx, sy, sz) ->
-            val stats = validateAgainstSdk(rays!!, frame, sx, sy, sz)
-            Log.d(TAG, "LUT-vs-SDK count=${stats.count}, rmse=${"%.1f".format(stats.rmseOverallMm)}mm, p95=${"%.1f".format(stats.p95OverallMm)}mm")
+            val stats = validateAgainstSdk(raysLocal, frame, sx, sy, sz)
+            Log.d(
+                TAG,
+                "LUT-vs-SDK count=${stats.count}, rmse=${"%.1f".format(stats.rmseOverallMm)}mm, " +
+                        "p95=${"%.1f".format(stats.p95OverallMm)}mm"
+            )
         }
 
         // 6) 平面擬合（RANSAC → PCA 精修）
@@ -213,7 +277,12 @@ class ToFProcessor(
         val rawTilt = Math.toDegrees(acos(n[2].coerceIn(-1f, 1f).toDouble()))
         val tiltDeg = if (rawTilt > 90) 180 - rawTilt else rawTilt
         val yawDeg = Math.toDegrees(atan2(n[0].toDouble(), n[2].toDouble()))
-        val pitchDeg = Math.toDegrees(atan2(-n[1].toDouble(), sqrt((n[0]*n[0] + n[2]*n[2]).toDouble())))
+        val pitchDeg = Math.toDegrees(
+            atan2(
+                -n[1].toDouble(),
+                sqrt((n[0] * n[0] + n[2] * n[2]).toDouble())
+            )
+        )
 
         // 9) 品質：RMSE / inliers（動態閾值）
         var sumSqMm = 0.0
@@ -223,7 +292,7 @@ class ToFProcessor(
             return max(0.008f, byPercent)      // at least 8mm
         }
         for (p in points) {
-            val distM = abs(n[0]*p.x + n[1]*p.y + n[2]*p.z + d)
+            val distM = abs(n[0] * p.x + n[1] * p.y + n[2] * p.z + d)
             val distMm = distM * 1000.0
             sumSqMm += distMm * distMm
             if (distM <= dynamicInlierThM(p.z)) inliers++
@@ -235,13 +304,17 @@ class ToFProcessor(
         val sample = points.take(5)
         Log.d(
             TAG,
-            "plane n=(${n[0]}, ${n[1]}, ${n[2]}), d=${"%.6f".format(d)} m (${(d*1000f).toInt()} mm), " +
+            "plane n=(${n[0]}, ${n[1]}, ${n[2]}), d=${"%.6f".format(d)} m (${(d * 1000f).toInt()} mm), " +
                     "tilt=${"%.2f".format(tiltDeg)}°, pitch=${"%.2f".format(pitchDeg)}°, yaw=${"%.2f".format(yawDeg)}°, " +
-                    "rmse=${"%.1f".format(rmseMm)}mm, inliers=${"%.1f".format(inlierRatio*100)}%, 3D points=${points.size}"
+                    "rmse=${"%.1f".format(rmseMm)}mm, inliers=${"%.1f".format(inlierRatio * 100)}%, 3D points=${points.size}"
         )
         if (sample.isNotEmpty()) {
             val p0 = sample[0]
-            Log.d(TAG, "pt[0] pix=(${p0.u},${p0.v}) depth=${p0.depthMm}mm amp=${p0.amp} → X=${p0.x}, Y=${p0.y}, Z=${p0.z}")
+            Log.d(
+                TAG,
+                "pt[0] pix=(${p0.u},${p0.v}) depth=${p0.depthMm}mm amp=${p0.amp} → " +
+                        "X=${p0.x}, Y=${p0.y}, Z=${p0.z}"
+            )
         }
 
         // 11) 封裝 PlaneFitInfo + 回傳
@@ -270,48 +343,71 @@ class ToFProcessor(
             inlierRatio = inlierRatio.toDouble(),
 
             // 新欄位
-            plane = planeInfo
+            plane = planeInfo,
+            intrinsics = activeK
         )
     }
 
     // ==============================
-    // 內參與 LUT 構建（支援可選快取）
+    // SDK 點雲驗證：LUT vs 廠商 PCD
     // ==============================
-    private fun ensureIntrinsicsAndRays(w: Int, h: Int) {
-        val needRebuild = (activeK == null || activeK!!.width != w || activeK!!.height != h)
-        if (!needRebuild) return
-
-        // 🔧 暫時：用 ToF 自己的 FOV 估計內參（請替換成你模組的實際 FOV）
-        val fovXdeg = 60.0
-        val fovYdeg = 45.0
-        val fx = (w / (2.0 * kotlin.math.tan(Math.toRadians(fovXdeg/2)))).toFloat()
-        val fy = (h / (2.0 * kotlin.math.tan(Math.toRadians(fovYdeg/2)))).toFloat()
-        val cx = (w - 1) / 2f
-        val cy = (h - 1) / 2f
-        activeK = Intrinsics(
-            width = w, height = h,
-            fx = fx, fy = fy, cx = cx, cy = cy,
-            rectified = true // ToF SDK 多半已整流；先視為 true
-        )
-
-        // 重建 LUT
-        rays = RaysLUT(activeK!!)
-        printedIntrinsics = false
-    }
-
     @Volatile private var latestSdkCloud: Triple<FloatArray, FloatArray, FloatArray>? = null
+
     fun updateSdkCloud(x: FloatArray, y: FloatArray, z: FloatArray) {
+        // 如果 PCD 是 mm，就這樣轉成 m，跟 LUT 一致
+        for (i in x.indices) {
+            x[i] /= 1000f
+            y[i] /= 1000f
+            z[i] /= 1000f
+        }
         latestSdkCloud = Triple(x, y, z)
     }
 
-    private fun sanityPrintIntrinsicsOnce() {
-        if (printedIntrinsics) return
-        val K = activeK ?: return
-        val fovX = Math.toDegrees(2.0 * kotlin.math.atan(K.width / (2.0 * K.fx.toDouble())))
-        val fovY = Math.toDegrees(2.0 * kotlin.math.atan(K.height / (2.0 * K.fy.toDouble())))
-        Log.d(TAG, "ACTIVE INTRINSICS fx=${K.fx} fy=${K.fy} cx=${K.cx} cy=${K.cy}, " +
-                "size=${K.width}x${K.height}, FOVx≈${"%.1f".format(fovX)}°, FOVy≈${"%.1f".format(fovY)}°, rectified=${K.rectified}")
-        printedIntrinsics = true
+    /** sdkX/Y/Z 長度應為 w*h；無值的點用 NaN 或 0 表示 */
+    private fun validateAgainstSdk(
+        rays: RaysLUT,
+        frame: ToFFrame,
+        sdkX: FloatArray, sdkY: FloatArray, sdkZ: FloatArray
+    ): LutSdkDiffStats {
+        val w = rays.K.width; val h = rays.K.height
+        val n = w * h
+        var cnt = 0
+        var sumSq = 0.0
+        var sumSqX = 0.0; var sumSqY = 0.0; var sumSqZ = 0.0
+        val errs = ArrayList<Double>(n)
+
+        for (i in 0 until n) {
+            val dmm = frame.depth[i]
+            val amp = frame.amp[i]
+            if (dmm <= 0 || amp <= 0) continue
+            val sx = sdkX[i]; val sy = sdkY[i]; val sz = sdkZ[i]
+            if (!sx.isFinite() || !sy.isFinite() || !sz.isFinite()) continue
+
+            val z = dmm / 1000f
+            val x = rays.dirX[i] * z
+            val y = rays.dirY[i] * z
+
+            val dx = (x - sx).toDouble()
+            val dy = (y - sy).toDouble()
+            val dz = (z - sz).toDouble()
+            val de = kotlin.math.sqrt(dx * dx + dy * dy + dz * dz)
+            errs.add(de)
+            sumSq += de * de
+            sumSqX += dx * dx; sumSqY += dy * dy; sumSqZ += dz * dz
+            cnt++
+        }
+
+        errs.sort()
+        val p95 =
+            if (errs.isEmpty()) 0.0 else errs[(errs.size * 0.95).toInt().coerceAtMost(errs.size - 1)]
+        return LutSdkDiffStats(
+            count = cnt,
+            rmseOverallMm = if (cnt == 0) 0.0 else kotlin.math.sqrt(sumSq / cnt) * 1000.0,
+            rmseXm = if (cnt == 0) 0.0 else kotlin.math.sqrt(sumSqX / cnt),
+            rmseYm = if (cnt == 0) 0.0 else kotlin.math.sqrt(sumSqY / cnt),
+            rmseZm = if (cnt == 0) 0.0 else kotlin.math.sqrt(sumSqZ / cnt),
+            p95OverallMm = p95 * 1000.0
+        )
     }
 
     // ==============================
@@ -477,52 +573,6 @@ class ToFProcessor(
         return out
     }
 
-    /** sdkX/Y/Z 長度應為 w*h；無值的點用 NaN 或 0 表示 */
-    private fun validateAgainstSdk(
-        rays: RaysLUT,
-        frame: ToFFrame,
-        sdkX: FloatArray, sdkY: FloatArray, sdkZ: FloatArray
-    ): LutSdkDiffStats {
-        val w = rays.K.width; val h = rays.K.height
-        val n = w*h
-        var cnt = 0
-        var sumSq = 0.0
-        var sumSqX = 0.0; var sumSqY = 0.0; var sumSqZ = 0.0
-        val errs = ArrayList<Double>(n)
-
-        for (i in 0 until n) {
-            val dmm = frame.depth[i]
-            val amp = frame.amp[i]
-            if (dmm <= 0 || amp <= 0) continue
-            val sx = sdkX[i]; val sy = sdkY[i]; val sz = sdkZ[i]
-            if (!sx.isFinite() || !sy.isFinite() || !sz.isFinite()) continue
-
-            val z = dmm / 1000f
-            val x = rays.dirX[i] * z
-            val y = rays.dirY[i] * z
-
-            val dx = (x - sx).toDouble()
-            val dy = (y - sy).toDouble()
-            val dz = (z - sz).toDouble()
-            val de = kotlin.math.sqrt(dx*dx + dy*dy + dz*dz)
-            errs.add(de)
-            sumSq += de*de
-            sumSqX += dx*dx; sumSqY += dy*dy; sumSqZ += dz*dz
-            cnt++
-        }
-
-        errs.sort()
-        val p95 = if (errs.isEmpty()) 0.0 else errs[(errs.size*0.95).toInt().coerceAtMost(errs.size-1)]
-        return LutSdkDiffStats(
-            count = cnt,
-            rmseOverallMm = if (cnt==0) 0.0 else kotlin.math.sqrt(sumSq/cnt)*1000.0,
-            rmseXm = if (cnt==0) 0.0 else kotlin.math.sqrt(sumSqX/cnt),
-            rmseYm = if (cnt==0) 0.0 else kotlin.math.sqrt(sumSqY/cnt),
-            rmseZm = if (cnt==0) 0.0 else kotlin.math.sqrt(sumSqZ/cnt),
-            p95OverallMm = p95*1000.0
-        )
-    }
-
     // =======（保留：可能外部會用）=======
     private fun validatePlane(points: List<Debug3DPoint>): LutPlaneMetrics? {
         if (points.size < 50) return null
@@ -534,13 +584,18 @@ class ToFProcessor(
         val rawTilt = Math.toDegrees(kotlin.math.acos(n[2].coerceIn(-1f, 1f).toDouble()))
         val tiltDeg = if (rawTilt > 90) 180 - rawTilt else rawTilt
         val yawDeg = Math.toDegrees(kotlin.math.atan2(n[0].toDouble(), n[2].toDouble()))
-        val pitchDeg = Math.toDegrees(kotlin.math.atan2(-n[1].toDouble(), kotlin.math.sqrt((n[0]*n[0] + n[2]*n[2]).toDouble())))
+        val pitchDeg = Math.toDegrees(
+            kotlin.math.atan2(
+                -n[1].toDouble(),
+                kotlin.math.sqrt((n[0] * n[0] + n[2] * n[2]).toDouble())
+            )
+        )
 
         var sumSqMm = 0.0
         var inliers = 0
         fun thM(z: Float) = maxOf(0.008f, 0.005f * z) // 8mm or 0.5%
         for (p in points) {
-            val distM = kotlin.math.abs(n[0]*p.x + n[1]*p.y + n[2]*p.z + d)
+            val distM = kotlin.math.abs(n[0] * p.x + n[1] * p.y + n[2] * p.z + d)
             sumSqMm += (distM * 1000.0) * (distM * 1000.0)
             if (distM <= thM(p.z)) inliers++
         }

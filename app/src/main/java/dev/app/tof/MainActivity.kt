@@ -35,13 +35,15 @@ class MainActivity : ComponentActivity() {
  * - label: 只是用來命名 / log
  * - depthId / ampId / pcdId: 對應 res/raw 檔
  * - baselineMm: 相對第一顆 ToF (0cm / pcd_1) 在 X 方向的位移 (mm)
+ * - sensorId: 使用哪一顆 ToF 的內參（SENSOR_1 / SENSOR_2）
  */
 data class Case(
-    val label: String,       // "0cm" / "31.02cm"
-    val depthId: Int,        // R.raw.depth1 / depth2
-    val ampId: Int,          // R.raw.amp_1 / amp_2
-    val pcdId: Int,          // R.raw.pcd_1 / pcd_2
-    val baselineMm: Double   // 0.0 / 310.2
+    val label: String,                     // "0cm" / "31.02cm"
+    val depthId: Int,                     // R.raw.depth1 / depth2
+    val ampId: Int,                       // R.raw.amp_1 / amp_2
+    val pcdId: Int,                       // R.raw.pcd_1 / pcd_2
+    val baselineMm: Double,               // 0.0 / 310.2
+    val sensorId: ToFProcessor.ToFSensorId // 使用哪一顆 ToF
 )
 
 // ---------------------- UI / pipeline ----------------------
@@ -50,7 +52,8 @@ data class Case(
 fun ToFScreen() {
     val context = LocalContext.current
 
-    // 兩個測試案例：1 = 0cm (ref), 2 = 31.02cm (baseline 310.2mm)
+    // ⚠️ 目前先示範：兩個案例都用第一顆 ToF
+    // 之後如果你有第二顆的 depth/amp/pcd，就再新增 Case，改成 SENSOR_2 即可
     val cases = remember {
         listOf(
             Case(
@@ -58,21 +61,23 @@ fun ToFScreen() {
                 depthId = R.raw.depth1,
                 ampId = R.raw.amp_1,
                 pcdId = R.raw.pcd_1,
-                baselineMm = 0.0
+                baselineMm = 0.0,
+                sensorId = ToFProcessor.ToFSensorId.SENSOR_1
             ),
             Case(
                 label = "31.02cm",
                 depthId = R.raw.depth2,
                 ampId = R.raw.amp_2,
                 pcdId = R.raw.pcd_2,
-                baselineMm = 310.2  // 31.02 cm
+                baselineMm = 310.2,  // 31.02 cm
+                sensorId = ToFProcessor.ToFSensorId.SENSOR_1
             )
         )
     }
 
     LaunchedEffect(Unit) {
         for (c in cases) {
-            Log.d("ToF", "===== Running case: ${c.label} =====")
+            Log.d("ToF", "===== Running case: ${c.label} (sensor=${c.sensorId}) =====")
 
             val cacheDir = java.io.File(context.getExternalFilesDir(null), "raylut").apply { mkdirs() }
 
@@ -93,7 +98,7 @@ fun ToFScreen() {
 
                         val file = CalibJsonWriter.write(
                             context = context,
-                            outFileName = "tof_${c.label.replace(' ', '_').replace('.', '_')}.json",
+                            outFileName = "tof_${c.sensorId.name.lowercase()}_${c.label.replace(' ', '_').replace('.', '_')}.json",
                             intrinsics = processor.getActiveIntrinsics(),
                             case = c,          // 這裡會把 baselineMm 一起寫進 JSON
                             result = result
@@ -101,10 +106,11 @@ fun ToFScreen() {
                         Log.d("ToF", "[${c.label}] JSON saved: ${file.absolutePath}")
                     }
                 },
-                cacheDir = cacheDir
+                cacheDir = cacheDir,
+                sensorId = c.sensorId   // ⭐ 這個最重要：告訴 Processor 用哪一顆 ToF 的內參
             )
 
-            // 載入對應這組的 PCD
+            // 載入對應這組的 PCD（SDK 算出來的點雲）
             try {
                 val cloud = PcdReader.readAsciiFromRaw(context, c.pcdId)
                 processor.updateSdkCloud(cloud.x, cloud.y, cloud.z)
@@ -113,7 +119,7 @@ fun ToFScreen() {
                 Log.w("ToF", "[${c.label}] PCD load failed: ${t.message}")
             }
 
-            // 建立這組的資料來源
+            // 建立這組的資料來源（離線 TXT → frame）
             val source: ToFSource = RawToFSource(
                 ctx = context,
                 depthRawId = c.depthId,
