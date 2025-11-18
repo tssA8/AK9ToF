@@ -189,7 +189,12 @@ class ToFProcessor(
         val centerRectRatio = 0.6f
 
         // 2) 3×3 中位數濾波
-        val depthMedian = median3(frame.depth, w, h)
+//        val depthMedian = median3(frame.depth, w, h)
+        val depthMedian = if (ENABLE_MEDIAN) {
+            median3(frame.depth, w, h)
+        } else {
+            frame.depth
+        }
 
         // 3) 直方圖抓主峰（先做基本過濾）
         val binsCount = (zMaxMm - zMinMm) / binSizeMm + 1
@@ -595,20 +600,33 @@ class ToFProcessor(
     private fun median3(a: IntArray, w: Int, h: Int): IntArray {
         val out = IntArray(a.size)
         val window = IntArray(9)
+
         for (y in 0 until h) {
             for (x in 0 until w) {
                 var k = 0
                 for (dy in -1..1) for (dx in -1..1) {
                     val xx = (x + dx).coerceIn(0, w - 1)
                     val yy = (y + dy).coerceIn(0, h - 1)
-                    window[k++] = a[yy * w + xx]
+                    val v = a[yy * w + xx]
+                    if (v > 0) {        // 只收有效 depth
+                        window[k++] = v
+                    }
                 }
-                window.sort()
-                out[y * w + x] = window[4]
+
+                val idx = y * w + x
+                out[idx] = if (k == 0) {
+                    // 鄰域全部無效 → 保留原本的值（通常是 0）
+                    a[idx]
+                } else {
+                    // 只 sort 有效區段 [0, k)
+                    window.sort(0, k)
+                    window[k / 2]
+                }
             }
         }
         return out
     }
+
 
     // =======（保留：可能外部會用）=======
     private fun validatePlane(points: List<Debug3DPoint>): LutPlaneMetrics? {
@@ -681,5 +699,6 @@ class ToFProcessor(
 
     companion object {
         private const val TAG = "ToF"
+        private const val ENABLE_MEDIAN = true
     }
 }
