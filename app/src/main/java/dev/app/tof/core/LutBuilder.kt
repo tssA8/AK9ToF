@@ -1,7 +1,6 @@
-package dev.app.tof
+package dev.app.tof.core
 
 import java.io.*
-import kotlin.math.*
 
 /** 依內參建 Ray LUT（dirX=x/z, dirY=y/z），可快取到檔案以加速下次啟動。 */
 object LutBuilder {

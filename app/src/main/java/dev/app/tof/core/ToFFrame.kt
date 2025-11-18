@@ -1,4 +1,4 @@
-package dev.app.tof
+package dev.app.tof.core
 
 data class ToFFrame(
     val depth: IntArray,

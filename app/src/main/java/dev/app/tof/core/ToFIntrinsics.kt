@@ -1,4 +1,4 @@
-package dev.app.tof
+package dev.app.tof.core
 
 object ToFIntrinsics {
     // ToF #1

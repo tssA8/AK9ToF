@@ -12,6 +12,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.tooling.preview.Preview
+import dev.app.tof.core.ToFProcessor
+import dev.app.tof.export.CalibJsonWriter
+import dev.app.tof.io.PcdReader
+import dev.app.tof.io.RawToFSource
+import dev.app.tof.io.ToFSource
 import dev.app.tof.ui.theme.TofTheme
 
 // ---------------------- MainActivity ----------------------
@@ -91,14 +96,23 @@ fun ToFScreen() {
                             Log.d(
                                 "ToF",
                                 "n=(${p.nx},${p.ny},${p.nz}), d=${"%.6f".format(p.dMeters)} m (${p.dMm.toInt()} mm), " +
-                                        "tilt=${"%.2f".format(p.tiltDeg)}°, pitch=${"%.2f".format(p.pitchDeg)}°, yaw=${"%.2f".format(p.yawDeg)}°, " +
+                                        "tilt=${"%.2f".format(p.tiltDeg)}°, pitch=${"%.2f".format(p.pitchDeg)}°, yaw=${
+                                            "%.2f".format(
+                                                p.yawDeg
+                                            )
+                                        }°, " +
                                         "rmse=${"%.1f".format(p.rmseMm)}mm, inliers=${p.inliers}/${p.total} (${p.inlierRatio * 100}%)"
                             )
                         }
 
                         val file = CalibJsonWriter.write(
                             context = context,
-                            outFileName = "tof_${c.sensorId.name.lowercase()}_${c.label.replace(' ', '_').replace('.', '_')}.json",
+                            outFileName = "tof_${c.sensorId.name.lowercase()}_${
+                                c.label.replace(
+                                    ' ',
+                                    '_'
+                                ).replace('.', '_')
+                            }.json",
                             intrinsics = processor.getActiveIntrinsics(),
                             case = c,          // 這裡會把 baselineMm 一起寫進 JSON
                             result = result

@@ -1,12 +1,4 @@
-package dev.app.tof
-
-import android.util.Log
-import java.util.concurrent.ArrayBlockingQueue
-import kotlin.math.abs
-import kotlin.math.acos
-import kotlin.math.atan2
-import kotlin.math.max
-import kotlin.math.sqrt
+package dev.app.tof.core
 
 // ==============================
 //  內參資料結構與工具

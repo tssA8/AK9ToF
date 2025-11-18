@@ -1,10 +1,12 @@
-package dev.app.tof
+package dev.app.tof.core
 
 import android.util.Log
 import java.io.File
+import java.util.Random
 import java.util.concurrent.ArrayBlockingQueue
 import kotlin.math.abs
 import kotlin.math.acos
+import kotlin.math.atan
 import kotlin.math.atan2
 import kotlin.math.max
 import kotlin.math.sqrt
@@ -154,8 +156,8 @@ class ToFProcessor(
 
         // 只印一次 FOV / 內參，避免 log 爆炸
         if (!printedIntrinsics) {
-            val fovXdeg = Math.toDegrees(2.0 * kotlin.math.atan(w / (2.0 * k.fx)))
-            val fovYdeg = Math.toDegrees(2.0 * kotlin.math.atan(h / (2.0 * k.fy)))
+            val fovXdeg = Math.toDegrees(2.0 * atan(w / (2.0 * k.fx)))
+            val fovYdeg = Math.toDegrees(2.0 * atan(h / (2.0 * k.fy)))
             Log.d(
                 TAG,
                 "Intrinsics[$sensorId]: fx=${k.fx}, fy=${k.fy}, cx=${k.cx}, cy=${k.cy}, " +
@@ -432,7 +434,7 @@ class ToFProcessor(
             val dx = (x - sx).toDouble()
             val dy = (y - sy).toDouble()
             val dz = (z - sz).toDouble()
-            val de = kotlin.math.sqrt(dx * dx + dy * dy + dz * dz)
+            val de = sqrt(dx * dx + dy * dy + dz * dz)
             errs.add(de)
             sumSq += de * de
             sumSqX += dx * dx; sumSqY += dy * dy; sumSqZ += dz * dz
@@ -444,10 +446,10 @@ class ToFProcessor(
             if (errs.isEmpty()) 0.0 else errs[(errs.size * 0.95).toInt().coerceAtMost(errs.size - 1)]
         return LutSdkDiffStats(
             count = cnt,
-            rmseOverallMm = if (cnt == 0) 0.0 else kotlin.math.sqrt(sumSq / cnt) * 1000.0,
-            rmseXm = if (cnt == 0) 0.0 else kotlin.math.sqrt(sumSqX / cnt),
-            rmseYm = if (cnt == 0) 0.0 else kotlin.math.sqrt(sumSqY / cnt),
-            rmseZm = if (cnt == 0) 0.0 else kotlin.math.sqrt(sumSqZ / cnt),
+            rmseOverallMm = if (cnt == 0) 0.0 else sqrt(sumSq / cnt) * 1000.0,
+            rmseXm = if (cnt == 0) 0.0 else sqrt(sumSqX / cnt),
+            rmseYm = if (cnt == 0) 0.0 else sqrt(sumSqY / cnt),
+            rmseZm = if (cnt == 0) 0.0 else sqrt(sumSqZ / cnt),
             p95OverallMm = p95 * 1000.0
         )
     }
@@ -530,7 +532,7 @@ class ToFProcessor(
 
     private fun estimatePlaneRansac(points: List<Debug3DPoint>, iters: Int = 120): Plane? {
         if (points.size < 3) return null
-        val rnd = java.util.Random()
+        val rnd = Random()
         var bestPlane: Plane? = null
         var bestInliers = -1
 
@@ -636,13 +638,13 @@ class ToFProcessor(
         var n = plane.normal; var d = plane.d
         if (n[2] < 0f) { n = floatArrayOf(-n[0], -n[1], -n[2]); d = -d }
 
-        val rawTilt = Math.toDegrees(kotlin.math.acos(n[2].coerceIn(-1f, 1f).toDouble()))
+        val rawTilt = Math.toDegrees(acos(n[2].coerceIn(-1f, 1f).toDouble()))
         val tiltDeg = if (rawTilt > 90) 180 - rawTilt else rawTilt
-        val yawDeg = Math.toDegrees(kotlin.math.atan2(n[0].toDouble(), n[2].toDouble()))
+        val yawDeg = Math.toDegrees(atan2(n[0].toDouble(), n[2].toDouble()))
         val pitchDeg = Math.toDegrees(
-            kotlin.math.atan2(
+            atan2(
                 -n[1].toDouble(),
-                kotlin.math.sqrt((n[0] * n[0] + n[2] * n[2]).toDouble())
+                sqrt((n[0] * n[0] + n[2] * n[2]).toDouble())
             )
         )
 
@@ -650,11 +652,11 @@ class ToFProcessor(
         var inliers = 0
         fun thM(z: Float) = maxOf(0.008f, 0.005f * z) // 8mm or 0.5%
         for (p in points) {
-            val distM = kotlin.math.abs(n[0] * p.x + n[1] * p.y + n[2] * p.z + d)
+            val distM = abs(n[0] * p.x + n[1] * p.y + n[2] * p.z + d)
             sumSqMm += (distM * 1000.0) * (distM * 1000.0)
             if (distM <= thM(p.z)) inliers++
         }
-        val rmseMm = kotlin.math.sqrt(sumSqMm / points.size)
+        val rmseMm = sqrt(sumSqMm / points.size)
         val inlierRatio = inliers.toDouble() / points.size
 
         return LutPlaneMetrics(

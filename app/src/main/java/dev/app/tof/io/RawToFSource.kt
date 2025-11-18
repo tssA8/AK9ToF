@@ -1,7 +1,8 @@
-package dev.app.tof
+package dev.app.tof.io
 
 import android.content.Context
 import android.content.res.Resources
+import dev.app.tof.core.ToFFrame
 
 class RawToFSource(
     private val ctx: Context,

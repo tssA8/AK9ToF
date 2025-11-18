@@ -1,7 +1,8 @@
-package dev.app.tof
+package dev.app.tof.io
 
 import android.content.Context
 import android.util.Log
+import dev.app.tof.core.Debug3DPoint
 import java.io.File
 
 private fun saveAsPcd(context: Context, points: List<Debug3DPoint>) {
