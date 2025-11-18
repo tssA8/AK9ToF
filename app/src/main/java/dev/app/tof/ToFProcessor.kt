@@ -223,7 +223,9 @@ class ToFProcessor(
             if (abs(d - peakMm) > deltaMm) return@BooleanArray false
             val u = idx % w
             val v = idx / w
-            if (u !in uMin..uMax || v !in vMin..vMax) return@BooleanArray false
+            if (u !in uMin..uMax || v !in vMax downTo vMin) { // 同等於 v !in vMin..vMax，寫法看你喜歡可改回去
+                return@BooleanArray false
+            }
             true
         }
 
@@ -257,6 +259,13 @@ class ToFProcessor(
                 "LUT-vs-SDK count=${stats.count}, rmse=${"%.1f".format(stats.rmseOverallMm)}mm, " +
                         "p95=${"%.1f".format(stats.p95OverallMm)}mm"
             )
+            if (stats.rmseOverallMm > 10_000.0) {
+                Log.w(
+                    TAG,
+                    "LUT-vs-SDK RMSE looks extremely large (>1cm x1000) — " +
+                            "check PCD units (mm/m) and coordinate frame alignment."
+                )
+            }
         }
 
         // 6) 平面擬合（RANSAC → PCA 精修）
@@ -353,13 +362,41 @@ class ToFProcessor(
     // ==============================
     @Volatile private var latestSdkCloud: Triple<FloatArray, FloatArray, FloatArray>? = null
 
+    /**
+     * 更新 SDK cloud：
+     * - 自動偵測目前單位是 mm 還是 m
+     *   - 若 Z 的中位數 > 50，當作 mm，再 /1000 → m
+     *   - 否則當作已經是 m，就不再縮放
+     */
     fun updateSdkCloud(x: FloatArray, y: FloatArray, z: FloatArray) {
-        // 如果 PCD 是 mm，就這樣轉成 m，跟 LUT 一致
-        for (i in x.indices) {
-            x[i] /= 1000f
-            y[i] /= 1000f
-            z[i] /= 1000f
+        var medianAbsZ = 0f
+        run {
+            val samples = ArrayList<Float>()
+            val step = max(1, z.size / 1000)
+            for (i in 0 until z.size step step) {
+                val v = abs(z[i])
+                if (v.isFinite() && v > 0f) samples.add(v)
+            }
+            if (samples.isNotEmpty()) {
+                samples.sort()
+                medianAbsZ = samples[samples.size / 2]
+            }
         }
+
+        val treatAsMm = medianAbsZ > 50f   // > 50 看成 mm，否則看成 m
+        if (treatAsMm) {
+            for (i in x.indices) {
+                x[i] /= 1000f
+                y[i] /= 1000f
+                z[i] /= 1000f
+            }
+        }
+
+        Log.d(
+            TAG,
+            "updateSdkCloud: detected unit=${if (treatAsMm) "mm→m" else "m"}, median|Z|≈$medianAbsZ"
+        )
+
         latestSdkCloud = Triple(x, y, z)
     }
 
